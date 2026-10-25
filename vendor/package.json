@@ -1,0 +1,14 @@
+{
+  "name": "atlas-vendor",
+  "private": true,
+  "scripts": {
+    "build": "esbuild entry.js --bundle --minify --format=iife --legal-comments=none --outfile=../static/atlas_vendor.js"
+  },
+  "dependencies": {
+    "3d-force-graph": "^1",
+    "three": "*"
+  },
+  "devDependencies": {
+    "esbuild": "*"
+  }
+}

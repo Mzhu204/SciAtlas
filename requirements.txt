@@ -1,0 +1,9 @@
+streamlit==1.66.1  # pinned: components.v1.html (used for the 3D map) is deprecated in later releases
+requests
+numpy
+scikit-learn>=1.3
+umap-learn>=0.5.7
+torch
+transformers
+adapters
+google-genai>=1.30

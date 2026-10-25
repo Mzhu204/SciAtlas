@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<!--
+  SCIATLAS 3D map. Rendered by app.py inside a Streamlit iframe; three placeholders are filled in Python:
+    __FONTS__   Montserrat @font-face rules (data URLs)
+    __VENDOR__  static/atlas_vendor.js: three.js + 3d-force-graph + UnrealBloomPass, one shared three instance
+    __DATA__    the map payload built by atlas_core.assemble() (meta, consensus, clusters, gaps, nodes, links)
+
+  Script sections, in order:
+    helpers → stars (density-scaled sprites) → graph + fog + bloom → starfield → galactic dust → terrain
+    → gap voids → HTML labels (projected from 3D each frame) → camera/focus → side panels → controls/full screen
+-->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  __FONTS__
+  /* palette: #D9FCED mint (text/light) · #09BBC8 teal · #405FFA blue · #3B3664 dusk · #07240F forest (depth) */
+  :root { --bg:#040908; --mint:#D9FCED; --teal:#09BBC8; --blue:#405FFA; --dusk:#3B3664; --forest:#07240F;
+    --panel:rgba(14,22,24,.72); --line:rgba(217,252,237,.10); --txt:#D9FCED; --mut:rgba(217,252,237,.55); --warm:#E39B86; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); overflow:hidden; color:var(--txt);
+    font-family:Montserrat,ui-sans-serif,system-ui,sans-serif; font-weight:400; }
+  b, h3, .nm, .q { font-weight:500; }
+  #graph { position:absolute; inset:0; }
+  #labels { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+  .lbl { position:absolute; left:0; top:0; white-space:nowrap; pointer-events:auto; cursor:pointer; user-select:none;
+    will-change:transform; text-shadow:0 0 6px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.9); transition:color .2s; }
+  .lbl.cl { font-size:11px; font-weight:500; letter-spacing:.2em; text-transform:uppercase; color:var(--mint); text-align:center; }
+  .lbl.cl::before { content:''; display:inline-block; width:5px; height:5px; border-radius:50%; background:var(--c);
+    box-shadow:0 0 6px var(--c); margin-right:8px; vertical-align:2px; }
+  .lbl.cl small { display:block; font-size:9px; font-weight:400; letter-spacing:.14em; color:var(--mut); margin-top:3px; }
+  .lbl.gp { font-size:10px; font-weight:400; letter-spacing:.14em; text-transform:uppercase; color:rgba(217,252,237,.6);
+    padding:3px 8px; border:1px dashed rgba(217,252,237,.28); border-radius:3px; }
+  .lbl:hover { color:#fff; }
+
+  .panel { position:absolute; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); box-shadow:0 10px 40px rgba(0,0,0,.45); }
+  .panel::-webkit-scrollbar { width:5px } .panel::-webkit-scrollbar-thumb { background:var(--dusk); border-radius:6px }
+
+  #left { top:14px; left:14px; width:318px; max-height:calc(100% - 28px); overflow-y:auto; padding:18px 16px 10px; transition:transform .35s; }
+  #left.closed { transform:translateX(-340px); }
+  #toggleLeft { position:absolute; top:14px; left:340px; z-index:5; transition:left .35s; }
+  #left.closed + #toggleLeft { left:14px; }
+  .brand { font-size:10px; letter-spacing:.42em; font-weight:500; color:var(--teal); }
+  .q { font-size:19px; line-height:1.3; margin:8px 0 14px; letter-spacing:.01em; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:12px; }
+  .stats div { border:1px solid var(--line); border-radius:8px; padding:8px 4px; text-align:center;
+    font-size:8px; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
+  .stats b { display:block; font-size:17px; color:var(--mint); letter-spacing:0; margin-bottom:1px; }
+  .sec { font-size:9.5px; font-weight:500; letter-spacing:.22em; text-transform:uppercase; color:var(--mut); margin:18px 0 8px; }
+  .sec em { font-style:normal; font-weight:400; letter-spacing:.02em; text-transform:none; color:rgba(217,252,237,.4); margin-left:6px; }
+  .consensus { font-size:13px; line-height:1.55; padding:12px 13px; border-radius:10px;
+    background:linear-gradient(160deg,rgba(9,187,200,.10),rgba(64,95,250,.06)); border:1px solid rgba(9,187,200,.28); }
+  .item { display:flex; gap:10px; align-items:flex-start; padding:7px 8px; border-radius:8px; cursor:pointer; transition:background .15s; }
+  .item:hover, .item.on { background:rgba(217,252,237,.05); }
+  .item > i { flex:0 0 8px; height:8px; margin-top:5px; border-radius:50%; background:var(--c); box-shadow:0 0 8px var(--c); }
+  .item > i.void { background:transparent; border:1px dashed rgba(217,252,237,.6); box-shadow:none; flex-basis:10px; height:10px; margin-top:4px; }
+  .item > i.ring { background:transparent; border:1.5px solid var(--warm); box-shadow:none; flex-basis:10px; height:10px; margin-top:4px; }
+  .nm { font-size:13px; line-height:1.35; } .nm.sm { font-size:12px; font-weight:400; }
+  .sub { font-size:11px; color:var(--mut); margin-top:3px; line-height:1.4; }
+  .badge { display:inline-block; font-size:8.5px; font-weight:500; letter-spacing:.12em; text-transform:uppercase; padding:2px 6px;
+    border-radius:4px; margin-right:5px; border:1px solid currentColor; color:var(--mut); }
+  .badge.consensus { color:var(--teal); }
+  .badge.supporting { color:#7C91FB; }
+  .badge.emerging { color:var(--mint); }
+  .badge.contested { color:#A9A3E6; }
+  .badge.contrarian { color:var(--warm); }
+  .badge.unrated { color:rgba(217,252,237,.4); }
+  .badge[title] { cursor:help; }
+  .consensus .lead { font-size:9px; font-weight:500; letter-spacing:.18em; text-transform:uppercase; color:var(--teal); margin-bottom:7px;
+    display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .consensus .strength { font-size:8.5px; padding:2px 6px; border-radius:4px; border:1px solid currentColor; }
+  .consensus .strength.moderate { color:#7C91FB; }
+  .consensus .strength.weak, .consensus .strength.none { color:var(--warm); }
+  .consensus .ans { font-size:13.5px; line-height:1.55; color:var(--mint); }
+  .consensus .deb { font-size:11.5px; line-height:1.5; color:var(--mut); margin-top:8px; }
+  .consensus.off { background:transparent; border-color:var(--line); color:var(--mut); font-size:12px; }
+  .bar { display:flex; height:4px; border-radius:4px; overflow:hidden; margin:11px 0 5px; background:rgba(217,252,237,.08); }
+  .bar i { display:block; height:100%; }
+  .barlbl { font-size:10.5px; color:var(--mut); line-height:1.45; }
+  .barlbl b { color:var(--mint); }
+  details.key { margin:4px 0 4px; font-size:11px; color:var(--mut); }
+  details.key summary { cursor:pointer; font-size:10px; letter-spacing:.08em; color:var(--mut); list-style:none; }
+  details.key summary::before { content:'ⓘ '; }
+  details.key div { display:flex; gap:8px; align-items:baseline; margin:7px 0 0 2px; line-height:1.4; }
+  details.key .badge { flex:0 0 auto; min-width:80px; text-align:center; }
+  .claim { font-size:12.5px; line-height:1.5; padding:10px 12px; border-radius:8px; background:rgba(9,187,200,.07);
+    border:1px solid rgba(9,187,200,.25); margin:10px 0 0; }
+  .claim b, .warn b { display:block; font-size:9px; letter-spacing:.16em; text-transform:uppercase; margin-bottom:4px; }
+  .claim b { color:var(--teal); }
+
+  #detail { top:14px; right:14px; width:350px; max-height:calc(100% - 120px); overflow-y:auto; padding:20px 18px; transition:opacity .25s, transform .25s; }
+  #detail.hidden { opacity:0; transform:translateX(30px); pointer-events:none; }
+  #detail h3 { margin:10px 0 6px; font-size:16.5px; line-height:1.35; }
+  #detail .x { position:absolute; top:10px; right:12px; background:none; border:0; color:var(--mut); font-size:20px; cursor:pointer; font-family:inherit; }
+  .tag { display:inline-flex; align-items:center; gap:7px; font-size:9.5px; font-weight:500; letter-spacing:.16em; text-transform:uppercase; color:var(--mint); }
+  .tag::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--c); box-shadow:0 0 6px var(--c); }
+  .meta { font-size:11.5px; color:var(--mut); line-height:1.5; }
+  .kpis { display:flex; gap:8px; margin:14px 0; }
+  .kpis div { flex:1; border:1px solid var(--line); border-radius:8px; padding:9px; font-size:9px; color:var(--mut);
+    text-transform:uppercase; letter-spacing:.1em; }
+  .kpis b { display:block; font-size:17px; color:var(--mint); letter-spacing:0; text-transform:none; margin-bottom:2px; }
+  .warn { font-size:12.5px; line-height:1.5; padding:10px 12px; border-radius:8px; background:rgba(227,155,134,.07); border:1px solid rgba(227,155,134,.35); margin:10px 0; }
+  .warn b { color:var(--warm); }
+  .qbox { font-size:14px; line-height:1.5; padding:12px 14px; border-radius:8px; border:1px dashed rgba(217,252,237,.3); margin:10px 0; }
+  .abs { font-size:12.5px; line-height:1.65; color:rgba(217,252,237,.78); }
+  .summ { font-size:13.5px; line-height:1.6; margin:12px 0; }
+  .chips span { display:inline-block; font-size:10.5px; padding:3px 9px; margin:0 4px 5px 0; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
+  a.open { display:inline-block; margin-top:8px; font-size:11px; font-weight:500; letter-spacing:.12em; text-transform:uppercase; color:var(--teal);
+    text-decoration:none; padding:8px 13px; border-radius:6px; border:1px solid rgba(9,187,200,.45); }
+  a.open:hover { background:rgba(9,187,200,.1); }
+
+  #lang { left:50%; transform:translateX(-50%); bottom:16px; width:330px; padding:11px 18px 9px; }
+  #lang .lt { font-size:9px; font-weight:500; letter-spacing:.22em; text-transform:uppercase; color:var(--mut); text-align:center; }
+  #lang input { width:100%; margin:9px 0 3px; accent-color:var(--teal); cursor:pointer; }
+  #lang .ticks { display:flex; justify-content:space-between; font-size:11px; color:var(--mut); }
+  #lang .ticks span { cursor:pointer; transition:color .15s; } #lang .ticks span.on { color:var(--mint); font-weight:500; }
+
+  #tools { right:14px; bottom:16px; display:flex; gap:4px; padding:5px; }
+  .btn { background:transparent; color:var(--mut); border:1px solid var(--line); border-radius:7px; font:400 11.5px Montserrat,sans-serif;
+    letter-spacing:.04em; padding:7px 10px; cursor:pointer; }
+  .btn.on { color:var(--mint); border-color:rgba(9,187,200,.55); }
+  .btn:hover { color:var(--mint); background:rgba(217,252,237,.05); }
+  #hint { position:absolute; left:50%; transform:translateX(-50%); bottom:100px; font-size:10px; color:var(--mut); letter-spacing:.2em;
+    text-transform:uppercase; pointer-events:none; transition:opacity 1s; }
+  #loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; letter-spacing:.4em; color:var(--teal);
+    text-transform:uppercase; background:var(--bg); transition:opacity .6s; z-index:20; }
+
+  .float-tooltip-kap, .scene-tooltip { background:transparent !important; padding:0 !important; border-radius:0 !important; }
+  .tip { max-width:320px; white-space:normal; padding:10px 13px; border-radius:8px; background:rgba(8,14,15,.92);
+    border:1px solid var(--line); border-left:2px solid var(--c); font-family:Montserrat,sans-serif; }
+  .tip .c { font-size:9px; font-weight:500; letter-spacing:.16em; text-transform:uppercase; color:var(--c); }
+  .tip .t { font-size:12.5px; font-weight:500; color:var(--mint); margin:4px 0 5px; line-height:1.35; }
+  .tip .m { font-size:10.5px; color:var(--mut); }
+  .tip .w { font-size:10.5px; color:var(--warm); margin-top:5px; }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="labels"></div>
+<div id="left" class="panel"></div>
+<button id="toggleLeft" class="btn panel">☰</button>
+<div id="detail" class="panel hidden"></div>
+<div id="hint">drag to orbit · scroll to zoom · click anything · F for full screen</div>
+<div id="lang" class="panel">
+  <div class="lt">Explain it like I'm…</div>
+  <input id="lv" type="range" min="0" max="2" step="1" value="1" />
+  <div class="ticks"><span data-l="0">🌱 Curious</span><span data-l="1">🎓 Student</span><span data-l="2">🔬 Expert</span></div>
+</div>
+<div id="tools" class="panel">
+  <button class="btn on" id="bRot" title="Auto-rotate">⟳ Orbit</button>
+  <button class="btn on" id="bTer" title="Show landscape">⛰ Terrain</button>
+  <button class="btn" id="bLnk" title="Semantic threads">⋯ Threads</button>
+  <button class="btn" id="bHome" title="Reset view">⌂</button>
+  <button class="btn" id="bFull" title="Full screen (F)">⛶ Full screen</button>
+</div>
+<div id="loading">Rendering landscape</div>
+
+<script>__VENDOR__</script>
+<script type="module">
+const { THREE, ForceGraph3D, UnrealBloomPass } = window.ATLAS_VENDOR;
+
+// ---------------------------------------------------------------- data + helpers
+const DATA = __DATA__;
+const LV = ['curious', 'student', 'expert'];  // reading levels; the slider picks one
+let level = 1;
+// tx(): pick the current reading level from a {curious, student, expert} object (falls back to any level)
+const tx = o => !o ? '' : typeof o === 'string' ? o : (o[LV[level]] || o.student || o.expert || o.curious || '');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = n => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
+const trunc = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+
+const C = DATA.clusters, G = DATA.gaps;
+// star colours, all drawn from the palette (#3B3664 and #07240F lifted so they read as light on a dark sky)
+const PAL = ['#09BBC8', '#405FFA', '#D9FCED', '#8E87D6', '#6FD9D0', '#7C91FB', '#2A8CE0', '#B9C9F5', '#4FA88A'];
+const BG = '#040908', WARM = '#E39B86';
+C.forEach((c, i) => c.color = PAL[i % PAL.length]);
+const byId = new Map(DATA.nodes.map(n => [n.id, n]));
+const el = document.getElementById('graph');
+const left = document.getElementById('left'), detail = document.getElementById('detail');
+
+// ---------------------------------------------------------------- graph (positions fixed = UMAP)
+const nodes = DATA.nodes.map(n => Object.assign(n, { fx: n.x, fy: n.y, fz: n.z }));
+const links = DATA.links.map(([s, t]) => {
+  const a = byId.get(s).cl, b = byId.get(t).cl;
+  return { source: s, target: t, cl: a === b ? a : -1 };
+});
+// ---------------------------------------------------------------- stars
+// Local density (inverse mean distance to the 7 nearest papers, rank-normalised to 0..1) drives each star's
+// brightness and size: packed cores blaze like a galaxy, isolated papers are small and faint.
+{
+  const K = Math.min(7, nodes.length - 1);
+  const md = nodes.map(a => {
+    const d = nodes.map(b => (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2).sort((p, q) => p - q);
+    let s = 0; for (let i = 1; i <= K; i++) s += Math.sqrt(d[i]);
+    return s / K;
+  });
+  const order = md.map((v, i) => [v, i]).sort((p, q) => q[0] - p[0]);  // sparsest first
+  order.forEach(([, i], rank) => nodes[i].dn = rank / Math.max(1, nodes.length - 1));
+  nodes.forEach((n, i) => n.md = md[i]);
+}
+const starTex = (() => {  // tight hot core + soft halo, like a photographed star
+  const S = 128, cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d'), gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.07, 'rgba(255,255,255,1)');
+  gr.addColorStop(.16, 'rgba(255,255,255,.42)'); gr.addColorStop(.38, 'rgba(255,255,255,.09)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const MINT = new THREE.Color('#D9FCED');
+const ringMat = new THREE.MeshBasicMaterial({ color: WARM, transparent: true, opacity: .75, depthWrite: false });
+const rings = [];
+let hovered = null, showLinks = false, focusCl = null;
+
+function nodeObj(n) {
+  const cite = (n.r - 1.3) / 4.2;                       // 0..1, log-citations from the pipeline
+  n.__size = (7 + 14 * cite) * (.45 + 1.0 * n.dn);       // popular + crowded = big
+  n.__op = .3 + .7 * Math.pow(n.dn, .7);                 // crowded = bright, isolated = faint
+  const col = new THREE.Color(C[n.cl].color).lerp(MINT, .45 * n.dn);  // galaxy cores burn whiter
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: starTex, color: col, transparent: true, opacity: n.__op,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: true }));
+  s.scale.setScalar(n.__size);
+  const g = new THREE.Group(); g.add(s);
+  if (n.contra) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(Math.max(1.6, n.__size * .28), .14, 6, 48), ringMat);
+    g.add(ring); rings.push(ring);
+  }
+  n.__m = s;
+  return g;
+}
+function styleStar(n) {
+  const on = focusCl == null || n.cl === focusCl;
+  n.__m.material.opacity = n === hovered ? 1 : on ? n.__op : n.__op * .08;
+  n.__m.scale.setScalar(n === hovered ? Math.max(n.__size * 1.6, 9) : n.__size);
+}
+function tip(n) {
+  const c = C[n.cl];
+  return `<div class="tip" style="--c:${c.color}"><div class="c">${esc(tx(c.name))}</div>
+    <div class="t">${esc(n.t)}</div><div class="m">${n.yr || ''} · ${fmt(n.c)} citations${n.v ? ' · ' + esc(trunc(n.v, 40)) : ''}</div>
+    ${n.contra ? `<div class="w">⚡ Challenges the consensus</div>` : ''}</div>`;
+}
+
+const Graph = new ForceGraph3D(el, { controlType: 'orbit' })
+  .backgroundColor(BG)
+  .showNavInfo(false)
+  .nodeThreeObject(nodeObj)
+  .nodeLabel(tip)
+  .linkColor(l => l.cl >= 0 ? C[l.cl].color : '#3B3664')
+  .linkOpacity(.12)
+  .linkVisibility(() => showLinks)
+  .enableNodeDrag(false)
+  .cooldownTicks(8)
+  .onNodeHover(n => {
+    el.style.cursor = n ? 'pointer' : '';
+    const prev = hovered; hovered = n;
+    if (prev && prev.__m) styleStar(prev);
+    if (n && n.__m) styleStar(n);
+  })
+  .onNodeClick(n => showNode(n.id, true))
+  .onBackgroundClick(() => clearFocus())
+  .graphData({ nodes, links })
+  .width(innerWidth).height(innerHeight);
+
+const scene = Graph.scene();
+// depth: stars further from the camera sink into the dark (fog colour = sky colour)
+scene.fog = new THREE.FogExp2(BG, .00105);
+
+// bloom: a soft bleed around dense cores only (additive stars already do most of the work)
+try {
+  Graph.postProcessingComposer().addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), .9, .55, .12));
+  // the composer already encodes to sRGB; encoding again in the renderer washes black out to grey
+  Graph.renderer().outputColorSpace = THREE.LinearSRGBColorSpace;
+} catch (e) { console.warn('bloom unavailable', e); }
+
+// ---------------------------------------------------------------- starfield
+{
+  const N = 1600, p = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, r = 650 + Math.random() * 700, s = Math.sqrt(1 - u * u);
+    p.set([r * s * Math.cos(th), r * u, r * s * Math.sin(th)], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: '#D9FCED', size: 1.1, transparent: true, opacity: .35, fog: false })));
+}
+
+// ---------------------------------------------------------------- galactic dust
+// Faint motes scattered around every paper, spread by its local spacing: where papers crowd, dust piles up into
+// a glowing nebula; around loners it stays thin. One Points object per paradigm so it dims with focus.
+const dust = C.map((c, ci) => {
+  const members = nodes.filter(n => n.cl === ci), per = 26, pos = [], col = [];
+  const base = new THREE.Color(c.color);
+  const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  for (const n of members) {
+    const sig = n.md * .55;
+    for (let k = 0; k < per; k++) {
+      pos.push(n.x + gauss() * sig, n.y + gauss() * sig, n.z + gauss() * sig);
+      const b = .2 + .8 * n.dn * n.dn; col.push(base.r * b, base.g * b, base.b * b);  // dust glows only in crowds
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const m = new THREE.PointsMaterial({ size: 5, map: starTex, vertexColors: true, transparent: true, opacity: .5,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  const p = new THREE.Points(g, m); scene.add(p);
+  return m;
+});
+
+// ---------------------------------------------------------------- glowing terrain (hills = dense paradigms, craters = gaps)
+const floorY = Math.min(...nodes.map(n => n.y)) - 38;
+const terrain = (() => {
+  const ext = Math.max(...nodes.map(n => Math.max(Math.abs(n.x), Math.abs(n.z)))) * 1.3 + 25;
+  const SEG = 140, geo = new THREE.PlaneGeometry(ext * 2, ext * 2, SEG, SEG);
+  geo.rotateX(-Math.PI / 2);
+  const P = geo.attributes.position, N = P.count;
+  const H = new Float32Array(N), MIX = new Float32Array(N * 3), CARVE = new Float32Array(N);
+  const sig = ext / 17, s2 = 2 * sig * sig, cut = 9 * s2;
+  const cc = C.map(c => new THREE.Color(c.color));
+  let hmax = 1e-6;
+  for (let v = 0; v < N; v++) {
+    const x = P.getX(v), z = P.getZ(v);
+    let h = 0, r = 0, g = 0, b = 0;
+    for (const n of nodes) {
+      const dx = x - n.x, dz = z - n.z, d2 = dx * dx + dz * dz;
+      if (d2 > cut) continue;
+      const e = n.w * Math.exp(-d2 / s2), col = cc[n.cl];
+      h += e; r += e * col.r; g += e * col.g; b += e * col.b;
+    }
+    let carve = 1;
+    for (const gp of G) {
+      const dx = x - gp.pos[0], dz = z - gp.pos[2], gr = gp.rad * 1.3;
+      carve *= 1 - Math.exp(-(dx * dx + dz * dz) / (2 * gr * gr));
+    }
+    if (h > 0) { MIX[v * 3] = r / h; MIX[v * 3 + 1] = g / h; MIX[v * 3 + 2] = b / h; }
+    H[v] = h * carve; CARVE[v] = carve;
+    if (H[v] > hmax) hmax = H[v];
+  }
+  const col = new Float32Array(N * 3);
+  for (let v = 0; v < N; v++) {
+    const hn = H[v] / hmax, k = 1 - CARVE[v];
+    const x = P.getX(v) / ext, z = P.getZ(v) / ext, edge = Math.max(0, 1 - Math.pow(Math.hypot(x, z), 3)); // fade to black at rim
+    const br = (.04 + .75 * Math.pow(hn, 1.8)) * edge;
+    P.setY(v, Math.pow(hn, .8) * 46);
+    // forest-green floor (#07240F); gaps sink to near-black with a faint mint rim
+    col[v * 3]     = MIX[v * 3] * br + (.006 + .05 * k * k) * edge;
+    col[v * 3 + 1] = MIX[v * 3 + 1] * br + (.022 + .07 * k * k) * edge;
+    col[v * 3 + 2] = MIX[v * 3 + 2] * br + (.012 + .065 * k * k) * edge;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const grp = new THREE.Group();
+  grp.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: .55, depthWrite: false })));
+  grp.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: true, transparent: true, opacity: .3, depthWrite: false })));
+  grp.position.y = floorY;
+  scene.add(grp);
+  return grp;
+})();
+
+// ---------------------------------------------------------------- gap voids
+const gapObjs = G.map(g => {
+  const grp = new THREE.Group(); grp.position.set(...g.pos);
+  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(g.rad, 1),
+    new THREE.MeshBasicMaterial({ color: '#D9FCED', wireframe: true, transparent: true, opacity: .1, depthWrite: false }));
+  const core = new THREE.Mesh(new THREE.SphereGeometry(g.rad * .93, 28, 20),
+    new THREE.MeshBasicMaterial({ color: BG, transparent: true, opacity: .7, depthWrite: false }));
+  const beam = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -g.rad, 0), new THREE.Vector3(0, floorY - g.pos[1], 0)]),
+    new THREE.LineBasicMaterial({ color: '#D9FCED', transparent: true, opacity: .12 }));
+  grp.add(core, shell, beam); scene.add(grp);
+  return { shell };
+});
+
+// ---------------------------------------------------------------- HTML labels projected from 3D
+const labelBox = document.getElementById('labels');
+const LBL = [];
+function mkLabel(cls, pos, onclick, color) {
+  const d = document.createElement('div');
+  d.className = 'lbl ' + cls;
+  if (color) d.style.setProperty('--c', color);
+  d.onclick = onclick;
+  labelBox.appendChild(d);
+  const o = { d, p: new THREE.Vector3(...pos) };
+  LBL.push(o);
+  return o;
+}
+C.forEach(c => c.__lbl = mkLabel('cl', [c.cent[0], c.cent[1] + c.rad * .9 + 6, c.cent[2]], () => showCluster(c.id, true), c.color));
+G.forEach(g => g.__lbl = mkLabel('gp', [g.pos[0], g.pos[1] + g.rad + 3, g.pos[2]], () => showGap(g.id, true)));
+function renderLabels() {
+  C.forEach(c => c.__lbl.d.innerHTML = `${esc(trunc(tx(c.name), 32))}<small>${c.size} papers · ${c.stance}</small>`);
+  G.forEach(g => g.__lbl.d.innerHTML = `◌ ${esc(trunc(tx(g.name), 30))}`);
+  LBL.forEach(L => L.w = 0);  // re-measure after text changes
+}
+
+const v3 = new THREE.Vector3();
+function frame(t) {
+  const cam = Graph.camera(), w = el.clientWidth, h = el.clientHeight, placed = [];
+  for (const L of LBL) {  // clusters first (created first), then gaps; greedy de-overlap in screen space
+    v3.copy(L.p).project(cam);
+    if (v3.z > 1 || Math.abs(v3.x) > 1.15 || Math.abs(v3.y) > 1.15) { L.d.style.display = 'none'; continue; }
+    L.d.style.display = '';
+    if (!L.w) { L.w = L.d.offsetWidth; L.h = L.d.offsetHeight; }
+    const x = (v3.x + 1) / 2 * w;
+    const y0 = (1 - v3.y) / 2 * h;
+    let y = y0;
+    // try alternating slots below/above the anchor until the label fits
+    for (let i = 1; i <= 16; i++) {
+      const hit = placed.find(r => Math.abs(r.x - x) < (r.w + L.w) / 2 + 6 && Math.abs(r.y - y) < (r.h + L.h) / 2 + 3);
+      if (!hit) break;
+      y = y0 + Math.ceil(i / 2) * (L.h + 4) * (i % 2 ? 1 : -1);
+    }
+    placed.push({ x, y, w: L.w, h: L.h });
+    L.d.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%)`;
+    L.d.style.opacity = Math.max(.45, Math.min(1, 520 / cam.position.distanceTo(L.p)));
+  }
+  rings.forEach(r => { r.rotation.x = t * .0012; r.rotation.y = t * .0008; });
+  gapObjs.forEach((o, i) => { o.shell.rotation.y = t * .00025 * (i % 2 ? 1 : -1); o.shell.rotation.x = t * .00012; });
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- camera / focus
+const ctr = Graph.controls();
+function setRotate(on) { if (ctr) ctr.autoRotate = on; document.getElementById('bRot').classList.toggle('on', on); }
+if (ctr) { ctr.autoRotateSpeed = .45; ctr.enableDamping = true; ctr.dampingFactor = .08; }
+el.addEventListener('pointerdown', () => { setRotate(false); document.getElementById('hint').style.opacity = 0; });
+
+const R = Math.max(...nodes.map(n => Math.hypot(n.x, n.y, n.z)));
+function home(ms = 0) {
+  const fov = (Graph.camera().fov || 40) * Math.PI / 180, d = R / Math.sin(fov / 2) * 1.1;
+  Graph.cameraPosition({ x: 0, y: d * .42, z: d * .9 }, { x: 0, y: -10, z: 0 }, ms);
+}
+function flyTo([x, y, z], dist) {
+  const c = Graph.camera().position, d = new THREE.Vector3(c.x - x, c.y - y, c.z - z).normalize();
+  Graph.cameraPosition({ x: x + d.x * dist, y: y + d.y * dist + dist * .15, z: z + d.z * dist }, { x, y, z }, 1100);
+  setRotate(false);
+}
+function dim(cl) {
+  focusCl = cl;
+  nodes.forEach(styleStar);
+  dust.forEach((m, i) => m.opacity = cl == null ? .5 : i === cl ? .65 : .04);
+}
+
+// ---------------------------------------------------------------- panels
+let current = null;
+const CS = DATA.consensus || {};
+// every stance is defined relative to the consensus answer shown at the top of the panel
+const STANCE = {
+  consensus: 'The group whose findings most directly establish the consensus answer.',
+  supporting: 'Findings agree with or build on the consensus.',
+  emerging: 'Newer work whose findings don’t yet confirm or refute the consensus.',
+  contested: 'Findings in this group are mixed or conflict about the consensus.',
+  contrarian: 'Findings mostly dispute the consensus.',
+  unrated: 'Not assessed: judging agreement needs Gemini, which was unavailable for this map.',
+};
+const STRENGTH = { strong: 'Strong consensus', moderate: 'Moderate consensus', weak: 'Weak consensus', none: 'No clear consensus' };
+const badge = s => `<span class="badge ${s}" title="${esc(STANCE[s] || '')}">${s}</span>`;
+
+function consensusBox() {
+  if (!CS.available) {
+    const err = DATA.meta.llm_error;
+    return `<div class="consensus off">No consensus answer for this map. Stating what most research agrees on means reading
+      each paper’s findings, which needs Gemini. ${err ? `Gemini returned an error: <i>${esc(trunc(err, 160))}</i>`
+      : 'Set <b>GEMINI_API_KEY</b> and search again.'}</div>`;
+  }
+  const deb = tx(CS.debate);
+  return `<div class="consensus">
+      <div class="lead"><span>What most research finds</span><span class="strength ${CS.strength}">${STRENGTH[CS.strength] || ''}</span></div>
+      <div class="ans">${esc(tx(CS.answer))}</div>
+      ${deb ? `<div class="deb"><b>Still debated:</b> ${esc(deb)}</div>` : ''}
+      <div class="bar"><i style="width:${CS.agree}%;background:#09BBC8"></i><i style="width:${CS.mixed}%;background:#8E87D6"></i><i style="width:${CS.dispute}%;background:${WARM}"></i></div>
+      <div class="barlbl"><b>${CS.agree}%</b> of papers sit in agreeing paradigms · <b>${CS.mixed}%</b> mixed or emerging · <b>${CS.dispute}%</b> disputing</div>
+    </div>`;
+}
+function stanceKey() {
+  const order = CS.available ? ['consensus', 'supporting', 'emerging', 'contested', 'contrarian'] : ['unrated'];
+  return `<details class="key" open><summary>What the labels mean</summary>
+    ${order.map(s => `<div>${badge(s)}<span>${STANCE[s]}</span></div>`).join('')}</details>`;
+}
+
+function renderLeft() {
+  const contras = nodes.filter(n => n.contra).sort((a, b) => b.c - a.c);
+  left.innerHTML = `
+    <div class="brand">SCIATLAS · MAP OF SCIENCE</div>
+    <div class="q">${esc(DATA.meta.query)}</div>
+    <div class="stats"><div><b>${nodes.length}</b>papers</div><div><b>${C.length}</b>paradigms</div>
+      <div><b>${G.length}</b>gaps</div><div><b>${contras.length}</b>challengers</div></div>
+    <div class="sec">Scientific consensus</div>
+    ${consensusBox()}
+    <div class="sec">Paradigms</div>
+    ${stanceKey()}
+    ${C.map(c => `<div class="item" data-c="${c.id}"><i style="--c:${c.color}"></i><div>
+      <div class="nm">${esc(tx(c.name))}</div><div class="sub">${badge(c.stance)}${c.size} papers</div></div></div>`).join('')}
+    ${G.length ? `<div class="sec">Research gaps<em>empty space = missing science</em></div>` + G.map(g => `
+      <div class="item" data-g="${g.id}"><i class="void"></i><div><div class="nm">${esc(tx(g.name))}</div>
+      <div class="sub">${Math.round(g.density * 100)}% of hilltop paper density · ${g.score.toFixed(2)}× sparser</div></div></div>`).join('') : ''}
+    ${CS.available ? `<div class="sec">Challenging the consensus<em>findings that conflict with the answer above</em></div>` +
+      (contras.length ? contras.map(n => `
+      <div class="item" data-n="${n.id}"><i class="ring"></i><div><div class="nm sm">${esc(trunc(n.t, 95))}</div>
+      <div class="sub">${n.yr || ''} · ${esc(tx(n.why))}</div></div></div>`).join('')
+      : `<div class="sub" style="padding:0 8px">No mapped paper reports findings that directly contradict the consensus.</div>`) : ''}`;
+  left.querySelectorAll('[data-c]').forEach(e => e.onclick = () => showCluster(+e.dataset.c, true));
+  left.querySelectorAll('[data-g]').forEach(e => e.onclick = () => showGap(+e.dataset.g, true));
+  left.querySelectorAll('[data-n]').forEach(e => e.onclick = () => showNode(e.dataset.n, true));
+}
+function open(html) {
+  detail.innerHTML = `<button class="x" title="close">×</button>` + html;
+  detail.classList.remove('hidden');
+  detail.querySelector('.x').onclick = clearFocus;
+  detail.querySelectorAll('[data-n]').forEach(e => e.onclick = () => showNode(e.dataset.n, true));
+  detail.querySelectorAll('[data-c]').forEach(e => e.onclick = () => showCluster(+e.dataset.c, true));
+}
+const paperItem = n => `<div class="item" data-n="${n.id}"><i style="--c:${C[n.cl].color}"></i><div>
+  <div class="nm sm">${esc(trunc(n.t, 100))}</div><div class="sub">${n.yr || ''} · ${fmt(n.c)} citations</div></div></div>`;
+
+function showNode(id, fly) {
+  const n = byId.get(id), c = C[n.cl];
+  current = ['n', id];
+  dim(null);
+  open(`<span class="tag" style="--c:${c.color}">${esc(tx(c.name))}</span>
+    <h3>${esc(n.t)}</h3>
+    <div class="meta">${esc(n.au)}${n.au ? ' · ' : ''}${n.yr || ''}${n.v ? ' · <i>' + esc(n.v) + '</i>' : ''}</div>
+    <div class="kpis"><div><b>${fmt(n.c)}</b>citations</div><div><b>${c.stance}</b>paradigm stance</div></div>
+    ${n.contra ? `<div class="claim"><b>The consensus</b>${esc(tx(CS.answer))}</div>
+      <div class="warn"><b>⚡ How this paper disagrees</b>${esc(tx(n.why))}</div>` : ''}
+    <p class="abs">${esc(n.ab)}</p>
+    <a class="open" href="${esc(n.url)}" target="_blank" rel="noopener">Open paper ↗</a>`);
+  if (fly) flyTo([n.x, n.y, n.z], 70);
+}
+function showCluster(id, fly) {
+  const c = C[id];
+  current = ['c', id];
+  dim(id);
+  open(`<span class="tag" style="--c:${c.color}">paradigm · ${c.size} papers</span>
+    <h3>${esc(tx(c.name))}</h3>
+    ${badge(c.stance)} <span class="sub">${esc(STANCE[c.stance] || '')}</span>
+    <p class="summ">${esc(tx(c.summary))}</p>
+    <div class="chips">${c.keywords.map(k => `<span>${esc(k)}</span>`).join('')}</div>
+    <div class="sec">Most cited here</div>${c.top.map(i => paperItem(byId.get(i))).join('')}`);
+  if (fly) flyTo(c.cent, c.rad * 3 + 70);
+}
+function showGap(id, fly) {
+  const g = G[id], A = C[g.a], B = C[g.b];
+  current = ['g', id];
+  dim(null);
+  open(`<span class="tag" style="--c:#D9FCED">research gap</span>
+    <h3>${esc(tx(g.name))}</h3>
+    <div class="qbox">❓ ${esc(tx(g.question))}</div>
+    <div class="kpis"><div><b>${g.score.toFixed(2)}×</b>sparser than the hilltops</div><div><b>${Math.round(g.density * 100)}%</b>of hilltop density</div></div>
+    <div class="meta">Measured in the original 768-D SPECTER2 space: the k-NN radius at the emptiest point between these
+      two paradigms, compared with the same measurement at each paradigm's centre.</div>
+    <div class="sec">Between</div>
+    <div class="item" data-c="${A.id}"><i style="--c:${A.color}"></i><div class="nm">${esc(tx(A.name))}</div></div>
+    <div class="item" data-c="${B.id}"><i style="--c:${B.color}"></i><div class="nm">${esc(tx(B.name))}</div></div>
+    <div class="sec">Closest existing work</div>${g.near.map(i => paperItem(byId.get(i))).join('')}`);
+  if (fly) flyTo(g.pos, g.rad * 4 + 60);
+}
+function clearFocus() { current = null; detail.classList.add('hidden'); dim(null); }
+function rerender() {
+  renderLabels(); renderLeft();
+  if (current) ({ n: showNode, c: showCluster, g: showGap })[current[0]](current[1], false);
+  document.querySelectorAll('#lang .ticks span').forEach(s => s.classList.toggle('on', +s.dataset.l === level));
+}
+
+// ---------------------------------------------------------------- controls
+const lv = document.getElementById('lv');
+lv.oninput = () => { level = +lv.value; rerender(); };
+document.querySelectorAll('#lang .ticks span').forEach(s => s.onclick = () => { lv.value = s.dataset.l; lv.oninput(); });
+document.getElementById('bRot').onclick = () => setRotate(!(ctr && ctr.autoRotate));
+document.getElementById('bTer').onclick = e => { terrain.visible = !terrain.visible; e.target.classList.toggle('on', terrain.visible); };
+document.getElementById('bLnk').onclick = e => { showLinks = !showLinks; Graph.linkVisibility(() => showLinks); e.target.classList.toggle('on', showLinks); };
+document.getElementById('bHome').onclick = () => { clearFocus(); home(1200); };
+// centre the galaxy in the space right of the side panel (labels + picking use the same camera, so they follow)
+function frameView() {
+  const cam = Graph.camera(), W = innerWidth, H = innerHeight;
+  const shift = left.classList.contains('closed') ? 0 : -Math.min(170, W * .14);
+  cam.setViewOffset(W, H, shift, 0, W, H);
+  cam.updateProjectionMatrix();
+}
+document.getElementById('toggleLeft').onclick = () => { left.classList.toggle('closed'); frameView(); };
+addEventListener('resize', () => { Graph.width(innerWidth).height(innerHeight); frameView(); });
+frameView();
+
+// true full screen: the Streamlit iframe carries allow="fullscreen", so the map can take over the whole display
+const bFull = document.getElementById('bFull');
+function toggleFull() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.().catch(e => console.warn('fullscreen refused', e));
+}
+bFull.onclick = toggleFull;
+addEventListener('keydown', e => {
+  if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') toggleFull();
+});
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  bFull.textContent = on ? '⤡ Exit full screen' : '⛶ Full screen';
+  bFull.classList.toggle('on', on);
+  Graph.width(innerWidth).height(innerHeight); frameView();
+});
+
+home();
+setRotate(true);
+rerender();
+document.fonts.ready.then(() => LBL.forEach(L => L.w = 0));  // re-measure labels once Montserrat is in
+requestAnimationFrame(frame);
+const ld = document.getElementById('loading');
+ld.style.opacity = 0; setTimeout(() => ld.remove(), 700);
+</script>
+</body>
+</html>

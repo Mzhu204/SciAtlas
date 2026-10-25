@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+.atlas_cache/
+.streamlit/secrets.toml
+vendor/node_modules/
