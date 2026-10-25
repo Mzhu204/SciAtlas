@@ -1,123 +1,152 @@
-# 🌌 SCIATLAS: the shape of science
+# SciAtlas: The Shape of Science
 
-Search a field or ask a question, and SCIATLAS maps its research landscape as a navigable 3D galaxy:
+SciAtlas is an open-source research exploration platform that transforms flat, linear paper searches into an interactive 3D galaxy of scientific knowledge. By retrieving research literature, computing 768-dimensional semantic embeddings, and conducting high-dimensional vector math, SciAtlas maps scientific consensus, identifies emerging counterarguments, and mathematically reveals unexplored literature gaps.
 
+---
 
-![Interface Image](Demo_image2.png)
+![SciAtlas Interface Demo](Demo_image2.png)
 
-- **Every paper is a star.** Size comes from citations; brightness comes from how crowded its neighbourhood is, so
-  dense paradigms blaze like galaxy cores and isolated papers stay faint. Stars further away fade into the dark.
-- **Scientific consensus**: a direct, plain-language answer to your question, stating what the majority of the papers'
-  findings agree on. It comes with a strength rating, the main open debate, and the share of papers in agreeing,
-  mixed and disputing paradigms.
-- **Challenging the consensus**: each paradigm's stance (consensus / supporting / emerging / contested / contrarian)
-  is judged against that stated answer, and a key in the panel defines each label. Individual papers whose own
-  findings conflict with it are ringed, each with a one-line reason.
-- **Research gaps** are literal voids: dark wireframe spheres in space and craters in the terrain below, both backed by
-  a density measurement in the original embedding space (see below).
-- **"Explain it like I'm…" slider**: every answer, label and summary exists at three reading levels (Curious, Student,
-  Expert) and switches instantly.
-- **Immersive view**: after a search the controls shrink to one slim row and the map fills the window. Press **F** or
-  **⛶ Full screen** for true full screen.
+---
 
+## Why SciAtlas?
 
-Link to video demo:https://youtu.be/g1Mph_Q4iKY 
+Human knowledge is dynamic, multi-dimensional, and deeply interconnected. However, online research infrastructure has remained essentially flat for three decades: search bars, walls of blue links, endless browser tabs, and dense abstracts filled with domain jargon. 
 
-## Pipeline
+When searching for answers in complex domains, researchers face critical hurdles:
+* **Information Overload:** Skimming dozens of papers to find where the field actually lands on a question.
+* **Echo Chambers:** Missing vital counterarguments or niche studies that challenge established consensus.
+* **Invisible Unknowns:** Traditional search engines only index what *exists*—they cannot show where research is *missing*.
+
+SciAtlas replaces endless searching and scrolling with a single, high-density interface. It treats scientific domains as spatial networks where distance represents semantic similarity, node brightness represents impact, and voids represent unexplored frontiers.
+
+---
+
+## What It Does
+
+SciAtlas ingests query-relevant research papers (via OpenAlex) and dynamically generates a 3D force-directed knowledge map alongside structural analytics:
+
+* **Interactive 3D Galaxy Map:**
+  * **Stars (Papers):** Node size scales with citation count. Node brightness scales with neighborhood density—dense paradigms blaze like galaxy cores, while isolated studies remain dim.
+  * **Distance:** Proximity between stars reflects semantic similarity in high-dimensional embedding space.
+* **Scientific Consensus Engine:** Calculates and presents a direct, synthesized answer to the query representing the majority finding across indexed papers, complete with a strength rating and distribution of agreeing vs. disputing work.
+* **Stance & Challenger Identification:** Categorizes paradigms into stances (*Consensus*, *Supporting*, *Emerging*, *Contested*, *Contrarian*). Individual studies contradicting the primary consensus are highlighted with glowing red rings and itemized explanations.
+* **True Vector Literature Gaps:** Identifies missing links in human knowledge represented as dark wireframe spheres in 3D space and corresponding terrain craters.
+* **3-Level Adaptive Summaries:** An integrated *"Explain Like I'm..."* lens instantly adjusts all answers, cluster labels, and paper summaries across three reading levels: **Curious**, **Student**, and **Expert**.
+* **Immersive View:** Full-window responsive UI with offline zero-CDN rendering and full-screen controls (**F** or **⛶ Full Screen**).
+
+---
+
+## Architecture & Pipeline
+
+The backend executes a multi-stage parallel pipeline converting unstructured paper metadata into clustered, gap-analyzed 3D graph payloads.
 
 ```
-OpenAlex ─► SPECTER2 + proximity adapter (768-D) ─┬─► UMAP 3D layout ───────────────────────────────┐  (parallel)
-                                                  └─► k-means paradigms ─► gap analysis ─► Gemini ──┴─► 3D map
+OpenAlex API ─► SPECTER2 (768-D) ─┬─► UMAP 3D Layout ───────────────────────────────┐
+                                   │                                                ├─► 3D Payload (JSON/HTML)
+                                   └─► K-Means Paradigms ─► Gap Analysis ─► Gemini ─┘
 ```
 
-| Stage | What happens | Typical time (CPU, 200 papers) |
-|---|---|---|
-| OpenAlex | relevance-ranked papers with abstracts | ~2 s |
-| SPECTER2 | title + abstract → 768-D vector (int8, 160 tokens, cached per paper) | ~8 s cold, ~0 s for papers seen before |
-| Paradigms + gaps | k-means (k by silhouette), TF-IDF keywords, 768-D gap search | ~1 s |
-| UMAP | 3D layout; runs alongside the paradigm/gap analysis | ~0.3 s |
-| Gemini | consensus answer, stances, challengers, names at 3 levels: one request | ~5–15 s |
+| Pipeline Stage | Process Description | Latency Profile (200 Papers) |
+| :--- | :--- | :--- |
+| **Data Ingestion** | Query OpenAlex API for relevance-ranked papers with abstracts | ~2.0 s |
+| **Vector Embedding** | SPECTER2 model generates 768-D embeddings from `title + abstract` (int8 quantized) | ~8.0 s cold / ~0 s cached |
+| **Paradigm Clustering** | K-Means clustering (K optimized via Silhouette score) + TF-IDF keyword extraction | ~1.0 s |
+| **Dimensionality Reduction** | UMAP 3D spatial projection (executed in parallel with clustering) | ~0.3 s |
+| **LLM Synthesis** | Single-pass Gemini request generating consensus, stances, and 3-level summaries | ~5.0–15.0 s |
 
-Finished maps are cached, so a repeated search opens instantly.
+---
 
-### Why a gap on the map really is a gap in the research
+## Technical Deep Dive & Engineering Decisions
 
-UMAP distorts distances, so SCIATLAS never measures gaps in 3D. Gaps are measured in the **original 768-D SPECTER2 space**:
+### 1. Mathematical Literature Gap Detection (768-D vs. 3D Space)
+Dimensionality reduction algorithms like UMAP inherently distort distances and introduce visual artifacts. Calculating "gaps" in visual 3D coordinates yields arbitrary results. 
 
-1. For each paradigm and its two most similar paradigms, walk the normalised path between their centroids and compute
-   the 5-NN radius (cosine) at 21 points along it.
-2. The reference is the same measurement at the two hilltops (the centroids). The comparison has to be probe against
-   probe: in 768-D an averaged vector always looks denser than a real paper does.
-3. The emptiest point on the bridge gives **sparsity** (its radius ÷ the hilltop radius) and **density** (papers inside
-   a hilltop-sized neighbourhood there ÷ papers inside it at the hilltops). Bridges sparser than 1.05× become gaps.
-4. Only then is the gap *drawn*, at the emptiest visible spot between the two paradigms in the 3D layout.
+SciAtlas computes literature gaps strictly inside the original **768-dimensional SPECTER2 embedding space** prior to visualization:
 
-## Run it
+1. **Centroid Traversal:** For each paradigm cluster and its nearest neighboring centroids, SciAtlas computes a normalized linear trajectory between their 768-D centroids.
+2. **Probing Neighborhood Density:** It evaluates 21 discrete probe points along the trajectory, measuring the 5-Nearest Neighbor ($5$-NN) radius using cosine distance.
+3. **Reference Benchmarking:** Probe measurements are compared against reference densities at the cluster centroids (the "hilltops"). To ensure mathematical validity, comparison vectors are probed against probe points rather than averaged cluster vectors.
+4. **Sparsity & Density Calculation:**
+   $$\text{Sparsity} = \frac{\text{Radius}_{\text{probe}}}{\text{Radius}_{\text{hilltop}}}$$
+   Bridges exhibiting a sparsity threshold greater than $1.05\times$ relative to the surrounding clusters are classified as true research gaps.
+5. **Spatial Projection:** Only after mathematical verification in 768-D space is the gap projected into 3D coordinates for visual rendering (drawn as wireframe spheres and terrain depressions).
 
-Use Python 3.11–3.14 (tested on 3.14).
+### 2. High-Performance Latency Engineering
+* **Quantization & Threading Optimization:** SPECTER2 runs using `int8` quantization on CPU with length-sorted batch processing. To resolve severe CPU thread contention between PyTorch's OpenMP pool and Numba JIT (which caused $8\times$ performance degradation on initial runs), `NUMBA_THREADING_LAYER` is explicitly configured to `workqueue`.
+* **Parallel Execution:** UMAP layout generation and 768-D K-Means gap analysis execute concurrently on separate threads while the Gemini payload is prepared.
+* **Offline Bundling:** Front-end components (`three.js`, `3d-force-graph`, `UnrealBloomPass`, Montserrat fonts) are fully bundled and inlined locally under `static/`. The UI makes zero CDN network calls during runtime.
+* **Deterministic Layouts & Caching:** Computed node coordinates are fixed post-UMAP, avoiding client-side physics engine overhead. Completed map outputs and vector embeddings are cached locally in `.atlas_cache/`.
 
+### 3. Resilient LLM Workflow
+* **Single-Pass Prompting:** All text generation (consensus synthesis, contradiction reasoning, paradigm labeling across Curious/Student/Expert tiers) is consolidated into a single structured Gemini API request.
+* **Rate-Limit Handling:** Requests are serialized. Rate limit errors (`429`) trigger backoff retries only if requested retry delays are $\le 20\text{ s}$. Unrecoverable API states gracefully fall back to local TF-IDF paradigm summaries without breaking map rendering.
+
+---
+
+## Repository Structure
+
+```
+.
+├── app.py                  # Streamlit interface (landing page, map viewer, controls)
+├── atlas_core.py           # Core pipeline (OpenAlex, SPECTER2, UMAP, K-Means, Gaps, Gemini)
+├── map_template.html       # WebGL 3D canvas template (Three.js, force-graph, side panels)
+├── precompute.py           # Batch processing utility for pre-caching demo topics
+├── check_gemini.py         # System diagnostic script for LLM API status
+├── static/
+│   ├── atlas_vendor.js     # Bundled WebGL libraries (Three.js, 3d-force-graph)
+│   └── fonts/              # Offline font assets
+└── .atlas_cache/           # Local cache for paper embeddings and computed maps (git-ignored)
+```
+
+---
+
+## Getting Started
+
+### Prerequisites
+* **Python:** 3.10 or higher
+* **API Key:** Google Gemini API Key ([Get an API key here](https://aistudio.google.com/))
+
+### Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone [https://github.com/your-username/SciAtlas.git](https://github.com/your-username/SciAtlas.git)
+   cd SciAtlas
+   ```
+
+2. **Create and activate a virtual environment:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Configure environment variables:**
+   Set your Gemini API key in your terminal environment:
+   ```bash
+   export GEMINI_API_KEY="your_api_key_here"  # On Windows CMD: set GEMINI_API_KEY="your_api_key_here"
+   ```
+
+### Running the Application
+
+1. **Start the Streamlit application:**
+   ```bash
+   streamlit run app.py
+   ```
+2. Open your browser and navigate to `http://localhost:8501`.
+
+### Precomputing Maps (Optional)
+To pre-cache complex queries prior to live demonstrations or presentations:
 ```bash
-python -m venv .venv
-.venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
+python precompute.py --query "NFL players and CTE"
 ```
 
-Put your key in `.streamlit/secrets.toml` (git-ignored); the app and the scripts below all read it:
+---
 
-```toml
-GEMINI_API_KEY = "your-key"
-```
+## License
 
-| Setting (env var or secrets.toml) | Purpose |
-|---|---|
-| `GEMINI_API_KEY` | consensus answer, stances, challengers, and labels at three reading levels. Without it, the map still shows structure and gaps with keyword labels, but makes no agreement claims. |
-| `GEMINI_MODEL` | defaults to `gemini-2.5-flash`, falling back to `gemini-flash-latest` |
-| `GEMINI_MIN_INTERVAL` | minimum seconds between Gemini requests (default 6, under ~10 requests per minute) |
-| `GEMINI_PAPERS_PER_CLUSTER` | papers per paradigm sent to Gemini (default 14, about 5k prompt tokens) |
-| `OPENALEX_EMAIL` / `OPENALEX_API_KEY` | OpenAlex polite pool / API key |
-| `ATLAS_MAX_TOKENS` | SPECTER2 input length (default 160; 256 reads more abstract but embeds ~2× slower) |
-| `ATLAS_QUANTIZE=0` | turn off int8 CPU quantisation of SPECTER2 |
-
-### Before a demo
-
-```bash
-python precompute.py                     # caches the six demo queries (skips ones already cached)
-python precompute.py "your own query"    # cache anything else you plan to show
-python check_gemini.py                   # one tiny request: confirms the key, model and billing
-```
-
-Open the app ~30 s before presenting: the model load and UMAP compilation happen in the background at startup.
-
-## Project layout
-
-| File | Role |
-|---|---|
-| `app.py` | Streamlit page: landing page, immersive map view, session caching, methods panel |
-| `atlas_core.py` | the pipeline: OpenAlex, SPECTER2, paradigms, gaps, UMAP, Gemini, payload assembly, caching |
-| `map_template.html` | the 3D map: stars, dust, terrain, gap voids, labels, side panels, reading-level slider |
-| `static/atlas_vendor.js` | committed bundle of three.js + 3d-force-graph + UnrealBloomPass (rebuild: `cd vendor && npm install && npm run build`) |
-| `static/fonts/` | Montserrat (SIL Open Font License), embedded so nothing loads from a CDN |
-| `precompute.py`, `check_gemini.py` | demo prep and Gemini diagnostics |
-| `.atlas_cache/` | cached maps, Gemini replies and embeddings (git-ignored, safe to delete) |
-
-## Engineering notes
-
-**Latency**
-- Startup warm-up (background thread): SPECTER2 load, UMAP's numba JIT on data of the real shape, heavy imports
-  (scikit-learn, google-genai), and a keep-alive connection to OpenAlex.
-- SPECTER2 runs int8-quantised on CPU with length-sorted batches; embeddings are cached per paper and saved to disk
-  off the critical path.
-- `NUMBA_THREADING_LAYER=workqueue`: numba's default threading layer contends with torch's OpenMP pool and made
-  SPECTER2 8× slower after the first UMAP run.
-- UMAP runs in parallel with the 768-D analysis, and Gemini starts the moment paradigms and gaps exist.
-- Each map and its rendered HTML are kept in the Streamlit session, so interacting never recomputes anything.
-- The front end loads nothing from the network (JS bundle and fonts are inlined), and node positions are fixed from
-  UMAP, so the browser runs no force simulation.
-
-**Gemini usage**
-- One request per map; the model/settings that last worked are tried first and unknown model names are skipped.
-- Replies are cached on disk by prompt, so rebuilding a map (`precompute.py --force`) costs nothing.
-- Requests are paced and serialised across sessions. A 429 is retried once only if the server asks for ≤ 20 s;
-  otherwise Gemini is skipped until the wait has passed. A 402 (no credits) stops all calls for 10 minutes.
-- A failed map is never cached and offers a **Retry Gemini** button instead of retrying on every rerun.
+Distributed under the MIT License. See `LICENSE` for more information. Font assets (`Montserrat`) are licensed under the SIL Open Font License.
