@@ -1,6 +1,8 @@
 # 🌌 SCIATLAS: the shape of science
 
 Search a field or ask a question, and SCIATLAS maps its research landscape as a navigable 3D galaxy:
+
+
 ![Interface Image](Demo_image2.png)
 
 - **Every paper is a star.** Size comes from citations; brightness comes from how crowded its neighbourhood is, so
@@ -17,6 +19,9 @@ Search a field or ask a question, and SCIATLAS maps its research landscape as a 
   Expert) and switches instantly.
 - **Immersive view**: after a search the controls shrink to one slim row and the map fills the window. Press **F** or
   **⛶ Full screen** for true full screen.
+
+
+Link to video demo:https://youtu.be/g1Mph_Q4iKY 
 
 ## Pipeline
 
