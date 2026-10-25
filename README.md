@@ -8,6 +8,8 @@ SciAtlas is an open-source research exploration platform that transforms flat, l
 
 ---
 
+Video Demo Link: https://youtu.be/g1Mph_Q4iKY
+
 ## Why SciAtlas?
 
 Human knowledge is dynamic, multi-dimensional, and deeply interconnected. However, online research infrastructure has remained essentially flat for three decades: search bars, walls of blue links, endless browser tabs, and dense abstracts filled with domain jargon. 
