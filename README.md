@@ -1,6 +1,7 @@
 # 🌌 SCIATLAS: the shape of science
 
 Search a field or ask a question, and SCIATLAS maps its research landscape as a navigable 3D galaxy:
+![Interface Image](Demo_image2.png)
 
 - **Every paper is a star.** Size comes from citations; brightness comes from how crowded its neighbourhood is, so
   dense paradigms blaze like galaxy cores and isolated papers stay faint. Stars further away fade into the dark.
